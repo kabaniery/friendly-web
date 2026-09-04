@@ -3,34 +3,39 @@ import {
     VirtualItem,
     Virtualizer,
 } from '@tanstack/react-virtual';
-import {useNavigationType, NavigationType} from 'react-router';
+import {NavigationType, useNavigationType} from 'react-router';
 import {useBackend} from '@/backend.context';
 import {users} from '@/services/users-service';
 import {useAppContext} from '@/app.context';
 import {communityPosts} from '@/services/community-posts-service';
 import {forceUnwrap} from '@/network/result';
 import {Button} from '@/components/ui/button';
-import {cn} from '@/lib/utils';
+import {cn, createFileLink} from '@/lib/utils';
 import {
     useInfiniteQuery,
     useMutation,
     useQuery,
     useQueryClient,
 } from '@tanstack/react-query';
-import {Loader2, AlertCircle, SquarePen, Newspaper, Trash} from 'lucide-react';
+import {AlertCircle, Loader2, Newspaper, SquarePen, Trash} from 'lucide-react';
 import {useTranslations} from 'use-intl';
 import React, {
+    ChangeEvent,
     ReactElement,
     useCallback,
+    useEffect,
     useMemo,
     useRef,
-    useEffect,
+    useState,
 } from 'react';
 import {toast} from 'sonner';
 import {newPost} from '@/services/new-post-service';
 import {StyledAvatar} from '@/components/styled-avatar';
-import {createFileLink} from '@/lib/utils';
 import {CommunityPostCard} from './post';
+import {
+    FriendsListContextMenu,
+} from '@/components/ui/contextMenu/friends-list-contextmenu';
+import {UserDetails} from '@/types/user-details';
 
 export function CommunityPage() {
     const t = useTranslations('community');
@@ -113,10 +118,10 @@ export function CommunityPage() {
         },
     });
 
-    const handleCreatePost = useCallback(() => {
-        if (!newPostText.trim()) return;
-        createPostMutation.mutate(newPostText);
-    }, [newPostText, createPostMutation]);
+    const handleCreatePost = useCallback((finalText: string) => {
+        if (!finalText.trim()) return;
+        createPostMutation.mutate(finalText);
+    }, [createPostMutation]);
 
     const posts = useMemo(() => {
         const pages = postsQuery.data?.pages ?? [];
@@ -251,8 +256,13 @@ interface CreatePostCardProps {
     text: string;
     className?: string;
     onTextChange: (text: string) => void;
-    onSubmit: () => void;
+    onSubmit: (text: string) => void;
     isSubmitting: boolean;
+}
+
+interface MagicFragment {
+    plainText: string;
+    value: string;
 }
 
 function CreatePostCard({
@@ -269,6 +279,11 @@ function CreatePostCard({
         queryKey: ['userDetails'],
         queryFn: async () => forceUnwrap(await backend.getUserDetails2()),
     });
+    const networkQuery = useQuery({
+        queryKey: ['networkDetails'],
+        queryFn: async () => forceUnwrap(await backend.getNetworkDetails()),
+    });
+    const friends = networkQuery.data?.friends ?? [];
 
     const textTooLong = text.length > 4096;
     const showTextLength = text.length > 4000;
@@ -282,11 +297,89 @@ function CreatePostCard({
         [userQuery],
     );
 
+    //#region smartEdit
+    const magicFragments = useRef<Map<number, MagicFragment>>(new Map());
+    const currentMagicIndex = useRef(0);
+    const pendingCaret = useRef<number | null>(null);
+    const handleSelect = (friend: UserDetails) => {
+        setFriendsMenuOpen(false);
+        magicFragments.current.set(currentMagicIndex.current - 1, {
+            plainText: '@' + friend.nickname,
+            value: `§§${friend.id}|${friend.nickname}§§`
+        });
+
+        const start = currentMagicIndex.current - 1;
+        const end = currentMagicIndex.current + friendsMenuFilterText.length;
+        const mention = '@' + friend.nickname + ' ';
+        pendingCaret.current = start + mention.length;
+        onTextChange(text.slice(0, start) + mention + text.slice(end));
+    };
+
+    const handleResolveMentions = () => {
+        let updatedText = text;
+
+        const keys = [...magicFragments.current.keys()].sort((a, b) => b - a);
+        for (const key of keys) {
+            const fragment = magicFragments.current.get(key)!;
+            const end = key + fragment.plainText.length;
+            if (updatedText.slice(key, end) === fragment.plainText) {
+                updatedText =
+                    updatedText.slice(0, key) +
+                    fragment.value +
+                    updatedText.slice(end);
+            }
+        }
+
+        onTextChange(updatedText);
+        onSubmit(updatedText);
+    };
+
+    const [friendsMenuOpen, setFriendsMenuOpen] = useState(false);
+    const [friendsMenuCoords, setFriendsMenuCoords] = useState({x: 0, y: 0});
+    const [friendsMenuFilterText, setFriendsMenuFilterText] = useState('');
+
+    const handleTextChange = useCallback((changeEvent: ChangeEvent<HTMLTextAreaElement>) => {
+        const textarea = changeEvent.target;
+        const value = textarea.value;
+        onTextChange(value);
+
+        const caret = textarea.selectionStart ?? value.length;
+        if (friendsMenuOpen) {
+            if (currentMagicIndex.current > caret) {
+                setFriendsMenuOpen(false);
+                return;
+            }
+            setFriendsMenuFilterText(value.slice(currentMagicIndex.current, caret));
+            return;
+        }
+
+        const isBoundary = (char: string | undefined) =>
+            char === undefined || char === ' ';
+
+        if (
+            value[caret - 1] === '@' &&
+            isBoundary(value[caret - 2]) &&
+            isBoundary(value[caret])
+        ) {
+            const rect = textarea.getBoundingClientRect();
+            setFriendsMenuCoords({x: rect.left, y: rect.bottom + 4});
+            setFriendsMenuOpen(true);
+            currentMagicIndex.current = caret;
+            setFriendsMenuFilterText('');
+        }
+    }, [onTextChange, friendsMenuOpen]);
+    //#endregion
+
     useEffect(() => {
         const post = postRef.current;
         if (post) {
             post.style.height = 'auto';
             post.style.height = `${post.scrollHeight}px`;
+        }
+        if (pendingCaret.current !== null && post) {
+            post.focus();
+            post.setSelectionRange(pendingCaret.current, pendingCaret.current);
+            pendingCaret.current = null;
         }
     }, [text]);
 
@@ -311,7 +404,7 @@ function CreatePostCard({
                             'outline-none resize-none',
                         )}
                         value={text}
-                        onChange={e => onTextChange(e.target.value)}
+                        onChange={handleTextChange}
                         placeholder={t('placeholder')}
                     />
                     <div className="w-full flex items-center justify-end gap-1">
@@ -337,7 +430,7 @@ function CreatePostCard({
                             </Button>
                         )}
                         <Button
-                            onClick={() => forbidSend || onSubmit()}
+                            onClick={() => forbidSend || handleResolveMentions()}
                             disabled={forbidSend}
                         >
                             {isSubmitting ? (
@@ -352,6 +445,14 @@ function CreatePostCard({
                     </div>
                 </div>
             </div>
+            <FriendsListContextMenu
+                open={friendsMenuOpen}
+                onOpenChange={setFriendsMenuOpen}
+                coords={friendsMenuCoords}
+                allFriendsList={friends}
+                searchText={friendsMenuFilterText}
+                handleSelect={handleSelect}
+            />
         </div>
     );
 }

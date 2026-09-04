@@ -14,11 +14,17 @@ import {useFriendlyStorage} from '@/components/friendly-storage-provider';
 import {communityPosts} from '@/services/community-posts-service';
 import {CommunityPostId} from '@/network/friendly-client';
 import {cn} from '@/lib/utils';
+import {useMemo} from 'react';
+import {useQuery} from '@tanstack/react-query';
+import {useBackend} from '@/backend.context';
+import {forceUnwrap} from '@/network/result';
+import {resolveMentions} from '@/app/community/resolve-mentions';
 
 export interface CommunityPostCardProps {
     postId: CommunityPostId;
     minimizeText?: boolean;
     minimizeToolbar?: boolean;
+    isReply?: boolean;
 }
 
 export function CommunityPostCard(props: CommunityPostCardProps) {
@@ -34,6 +40,7 @@ export function CommunityPostCard(props: CommunityPostCardProps) {
                     post={post}
                     minimizeText={props.minimizeText}
                     minimizeToolbar={props.minimizeToolbar}
+                    isReply={props.isReply}
                 />
             );
         case 'deleted':
@@ -45,16 +52,30 @@ export interface CommunityPostCardPlainProps {
     post: CommunityPostDetailsPlain;
     minimizeText?: boolean;
     minimizeToolbar?: boolean;
+    isReply?: boolean;
 }
 
 function CommunityPostCardPlain({
     post,
     minimizeText,
     minimizeToolbar,
+    isReply,
 }: CommunityPostCardPlainProps) {
     const t = useTranslations('post');
     const navigate = useNavigate();
     const storage = useFriendlyStorage();
+    const backend = useBackend();
+
+    const networkQuery = useQuery({
+        queryKey: ['networkDetails'],
+        queryFn: async () => forceUnwrap(await backend.getNetworkDetails()),
+    });
+    const friends = networkQuery.data?.friends ?? [];
+
+    const resolvedText = useMemo(
+        () => (isReply ? post.text : resolveMentions(post.text, friends)),
+        [post.text, friends, isReply],
+    );
 
     const avatarUrl = post.owner.avatar
         ? createFileLink(post.owner.avatar)
@@ -105,7 +126,7 @@ function CommunityPostCardPlain({
                             'text-foreground transition-all duration-300 ease-in-out',
                             minimizeText && 'line-clamp-10',
                         )}
-                        text={post.text}
+                        text={resolvedText}
                     />
                 </div>
             </div>

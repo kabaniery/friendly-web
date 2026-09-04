@@ -201,6 +201,7 @@ function ReplyContent({id, replyTo}: ReplyContentProps) {
                         postId={post.id}
                         minimizeToolbar={false}
                         minimizeText={true}
+                        isReply={true}
                     />
                 ))}
             </div>
